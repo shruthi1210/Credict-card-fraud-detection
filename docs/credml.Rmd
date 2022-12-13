@@ -1,0 +1,239 @@
+---
+title: "credML"
+author: "shruthi"
+date: "2021-02-06"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+The objective of the project is to train a machine learning algorithm on the dataset to successfully predict fraudulent transactions.
+
+Given the class imbalance ratio, we will be using measuring the accuracy using the Area Under the Precision-Recall Curve (AUC). Confusion matrix accuracy is not meaningful for unbalanced classification.
+```{r}
+library(dplyr) # for data manipulation
+library(stringr) # for data manipulation
+library(caret) # for sampling
+library(caTools) # for train/test split
+library(ggplot2) # for data visualization
+library(corrplot) # for correlations
+library(Rtsne) # for tsne plotting
+library(ROSE)# for ROSE sampling
+library(rpart)# for decision tree model
+library(Rborist)# for random forest model
+library(xgboost) # for xgboost model
+library(data.table)
+library(rpart.plot)
+```
+
+```{r}
+# function to set plot height and width
+fig <- function(width, heigth){
+     options(repr.plot.width = width, repr.plot.height = heigth)
+}
+# loading the data
+dataset = read.csv(file.choose())
+head(dataset)
+```
+
+```{r}
+tail(dataset)
+```
+```{r}
+# view the table from class column (0 for legit transactions and 1 for fraud)
+table(dataset$Class)
+```
+
+```{r}
+# view names of colums  of dataset
+names(dataset)
+```
+By looking at the data, we can see that there are 28 anonymous variables v1 - v28, one time column, one amount column and one label column( 0 for not fraud and 1 for fraud). We will visualize this data into histogram and bar plot to find any connection or relation between variables.
+```{r}
+summary(dataset$Amount)
+```
+
+```{r}
+hist(dataset$Amount)
+
+```
+
+```{r}
+hist(dataset$Amount[dataset$Amount < 100])
+```
+
+
+```{r}
+# view variance and standard deviation of amount column
+var(dataset$Amount)
+```
+
+```{r}
+sd(dataset$Amount)
+```
+
+```{r}
+# check whether there are any missing values in colums
+colSums(is.na(dataset))
+```
+
+
+```{r}
+# correlation of anonymous variables with amount and class
+correlation <- cor(dataset[, -1], method = "pearson")
+corrplot(correlation, number.cex = 1, method = "color", type = "full", tl.cex=0.7, tl.col="black")
+```
+
+
+```{r}
+# visualizing the distribution of transcations across time
+dataset %>%
+  ggplot(aes(x = Time, fill = factor(Class))) + 
+  geom_histogram(bins = 100) + 
+  labs(x = "Time elapsed since first transcation (seconds)", y = "no. of transactions", title = "Distribution of transactions across time") +
+  facet_grid(Class ~ ., scales = 'free_y') + theme()
+```
+pretty similar in both transactions. Since time doesn’t contribute much in fraud detection we can remove the time column from the data.
+that most of the features are not corelated.In fact, all the anonymous variables are independent to each other.
+
+The last visualization we can observe is the visualization of transactions using t-SNE (t-Distributed Stochastic Neighbor Embedding). This helps us reduce the dimensionality of the data and find any discoverable patterns if present. If there are no patttern present, it would be difficult to train the model.
+
+```{r}
+# only use 10% of data to compute SNE and perplexity to 20
+tsne_data <- 1:as.integer(0.1*nrow(dataset))
+tsne <- Rtsne(dataset[tsne_data,-c(1, 31)], perplexity = 20, theta = 0.5, pca = F, verbose = F, max_iter = 500, check_duplicates = F)
+classes <- as.factor(dataset$Class[tsne_data])
+tsne_matrix <- as.data.frame(tsne$Y)
+ggplot(tsne_matrix, aes(x = V1, y = V2)) + geom_point(aes(color = classes)) + theme_minimal() + ggtitle("t-SNE visualisation of transactions") + scale_color_manual(values = c("#E69F00", "#56B4E9"))
+```
+
+ Since, most of the fraud transactions lie near the edge of the blob of data, we can use different models to differentiate fraud transactions.
+
+```{r}
+# scaling the data using standardization and remove the first column (time) from the data set
+dataset$Amount <- scale(dataset$Amount)
+new_data <- dataset[, -c(1)]
+head(new_data)
+```
+```{r}
+# change 'Class' variable to factor
+new_data$Class <- as.factor(new_data$Class)
+levels(new_data$Class) <- c("Not Fraud", "Fraud")
+```
+
+```{r}
+# split the data into training set and test set
+set.seed(101)
+split <- sample.split(new_data$Class, SplitRatio = 0.8)
+train_data <- subset(new_data, split == TRUE)
+test_data <- subset(new_data, split == FALSE)
+dim(train_data)
+```
+```{r}
+dim(test_data)
+```
+```{r}
+# visualize the training data
+train_data %>% ggplot(aes(x = factor(Class), y = prop.table(stat(count)), fill = factor(Class))) +
+  geom_bar(position = "dodge") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = 'Class', y = 'Percentage', title = 'Training Class distributions') +
+  theme_grey()
+```
+Since the data is heavily unbalanced with 99% of non-fraudulent data, this may result in our model perfoming less accurately and being heavily baised towards non-fraudulent transactions. So, We sample the data using ROSE (Random over sampling examples), Over sampling or Down sampling method, and examine the area under ROC curve at each sampling methods
+```{r}
+set.seed(9560)
+up_train_data <- upSample(x = train_data[, -30],
+                         y = train_data$Class)
+table(up_train_data$Class)  
+```
+
+
+```{r}
+set.seed(9560)
+down_train_data <- downSample(x = train_data[, -30],
+                         y = train_data$Class)
+table(down_train_data$Class) 
+```
+we will use Down Sampling to reduce the time for model training and execution. Now, we will test each models and see which one classifies the data better using ROC-AUC curve.
+
+```{r}
+# fitting the logistic model
+logistic_model <- glm(Class ~ .,train_data, family=binomial())
+```
+```{r}
+summary(logistic_model)
+```
+```{r}
+plot(logistic_model)
+logistic_predictions <- predict(logistic_model, test_data, type='response')
+roc.curve(test_data$Class, logistic_predictions, plotit = TRUE, col = "blue")
+```
+
+
+```{r}
+decisionTree_model <- rpart(Class ~ . ,down_train_data, method = 'class')
+predicted_val <- predict(decisionTree_model,down_train_data, type = 'class')
+probability <- predict(decisionTree_model,down_train_data, type = 'prob')
+rpart.plot(decisionTree_model)
+```
+```{r}
+x = down_train_data[, -30]
+y = down_train_data[,30]
+
+rf_fit <- Rborist(x, y, ntree = 1000, minNode = 20, maxLeaf = 13)
+
+
+rf_pred <- predict(rf_fit, test_data[,-30], ctgCensus = "prob")
+prob <- rf_pred$prob
+
+roc.curve(test_data$Class, prob[,2], plotit = TRUE, col = 'blue')
+
+```
+From the random forest model, we got area under the ROC Curve: 0.962
+
+```{r}
+set.seed(40)
+
+#Convert class labels from factor to numeric
+labels <- down_train_data$Class
+y <- recode(labels, 'Not Fraud' = 0, "Fraud" = 1)
+
+# xgb fit
+xgb_fit <- xgboost(data = data.matrix(down_train_data[,-30]), 
+ label = y,
+ eta = 0.1,
+ gamma = 0.1,
+ max_depth = 10, 
+ nrounds = 300, 
+ objective = "binary:logistic",
+ colsample_bytree = 0.6,
+ verbose = 0,
+ nthread = 7
+)
+```
+
+```{r}
+# XGBoost predictions
+xgb_pred <- predict(xgb_fit, data.matrix(test_data[,-30]))
+roc.curve(test_data$Class, xgb_pred, plotit = TRUE)
+```
+From the XGBoost model, we got area under the ROC Curve: 0.968
+
+We can also check which variables has signigicant role in fraud detection. V14 stood out in decision tree model. Let’s compare it with XGboost model.
+
+```{r}
+names <- dimnames(data.matrix(train_data[,-30]))[[2]]
+
+# Compute feature importance matrix
+importance_matrix <- xgb.importance(names, model = xgb_fit)
+# Nice graph
+xgb.plot.importance(importance_matrix[1:10,])
+```
+As we can see v14 has significant role in distinguishing the fraud and non-fraud transactions.
+Conclusion:
+From the above plots and models, we can clarify that XGBoost performed better than logistic and Random Forest Model, although the margin was not very high. We can also fine tune the XGBoost model to make it perform even better. It is really great how models are able to find the distinguishing features between fraud and non-fraud transactions from such a big data.
+
+
+
+
